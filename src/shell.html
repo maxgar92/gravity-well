@@ -1,0 +1,421 @@
+<title>Gravity Well</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="theme-color" content="#000000">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;600;700&family=Share+Tech+Mono&display=swap">
+<style>
+/* Layout: espacio a pantalla completa; panel de estado arriba a la izquierda (como el original),
+   botones de vista arriba a la derecha, controles de vuelo en las dos esquinas inferiores. */
+:root {
+  color-scheme: dark;
+  --void: #000000;
+  --panel: rgba(8, 11, 21, 0.80);
+  --panel-solid: #090c17;
+  --edge: #2a3252;
+  --ink: #dfe5f5;
+  --dim: #8a94b4;
+  --blue: #3d74ff;
+  --red: #ff3b30;
+  --purple: #b44dff;
+  --yellow: #ffd60a;
+  --green: #16c43a;
+  --cyan: #1fc9c9;
+  --ui: "Chakra Petch", "Segoe UI", system-ui, sans-serif;
+  --mono: "Share Tech Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --btn: clamp(58px, 16vmin, 84px);
+  --sl: env(safe-area-inset-left, 0px);
+  --sr: env(safe-area-inset-right, 0px);
+  --st: env(safe-area-inset-top, 0px);
+  --sb: env(safe-area-inset-bottom, 0px);
+}
+html, body { height: 100%; background: var(--void); color: var(--ink); overflow: hidden; }
+body {
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  font-family: var(--ui); font-size: 15px;
+  -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent; overscroll-behavior: none; touch-action: none;
+}
+button { font: inherit; color: inherit; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+button:focus-visible { outline: 2px solid var(--yellow); outline-offset: 2px; }
+#app { position: fixed; inset: 0; overflow: hidden; touch-action: none; background: var(--void); }
+#view { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+#play { position: absolute; inset: 0; pointer-events: none; }
+#play[hidden] { display: none; }
+#play > * { pointer-events: auto; }
+#play > #toasts, #play > #status { pointer-events: none; }
+
+/* panel de estado */
+#hud {
+  position: absolute; left: calc(var(--sl) + 8px); top: calc(var(--st) + 8px);
+  padding: 5px; background: var(--panel); border: 1px solid var(--edge); border-radius: 3px;
+}
+#hudc { display: block; }
+
+/* barra superior derecha */
+.tbar { position: absolute; right: calc(var(--sr) + 8px); top: calc(var(--st) + 8px); display: flex; gap: 6px; }
+.tb {
+  width: 42px; height: 42px; border-radius: 4px; padding: 0;
+  background: var(--panel); border: 1px solid var(--edge);
+  display: grid; place-items: center;
+}
+.tb:active { background: #1d2a55; }
+.tb svg { width: 20px; height: 20px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+/* controles de vuelo */
+.ctl { position: absolute; bottom: calc(var(--sb) + 14px); display: flex; gap: 14px; align-items: flex-end; }
+#ctl-left { left: calc(var(--sl) + 14px); }
+#ctl-right {
+  right: calc(var(--sr) + 14px); display: grid;
+  grid-template-columns: auto auto; grid-template-areas: ". mis" "fire thrust";
+  gap: 10px 12px; align-items: end; justify-items: center;
+}
+.cb {
+  width: var(--btn); height: var(--btn); border-radius: 50%; padding: 0;
+  border: 1.5px solid rgba(150, 168, 220, 0.42); background: rgba(16, 22, 44, 0.40);
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  touch-action: none;
+}
+.cb svg { width: 42%; height: 42%; stroke: currentColor; fill: none; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+.cb b { font: 9px var(--mono); letter-spacing: 0.14em; color: var(--dim); font-weight: 400; }
+.cb.on { background: rgba(61, 116, 255, 0.50); border-color: #a9bcff; }
+.cb.on b { color: var(--ink); }
+#b-thrust { grid-area: thrust; width: calc(var(--btn) * 1.2); height: calc(var(--btn) * 1.2); }
+#b-thrust.on { background: rgba(255, 154, 31, 0.45); border-color: #ffc27a; }
+#b-fire { grid-area: fire; }
+#b-fire.on { background: rgba(255, 59, 48, 0.45); border-color: #ff9a92; }
+#b-mis { grid-area: mis; width: calc(var(--btn) * 0.8); height: calc(var(--btn) * 0.8); }
+
+/* línea de estado y mensajes */
+#status[hidden] { display: none; }
+#status {
+  position: absolute; left: 50%; transform: translateX(-50%); bottom: calc(var(--sb) + 16px);
+  max-width: min(44vw, 420px); padding: 5px 10px; text-align: center;
+  font: 13px/1.3 var(--mono); background: var(--panel); border: 1px solid var(--edge); border-radius: 3px;
+  pointer-events: none;
+}
+#status.ok { color: #7cf29a; border-color: #1c5a2c; }
+#status.warn { color: #ffd27a; border-color: #6b5214; }
+#status.dev { color: #fff; border-color: #8a94b4; }
+#toasts {
+  position: absolute; top: calc(var(--st) + 8px);
+  left: calc(var(--sl) + var(--hudw, 140px) + 16px); right: calc(var(--sr) + 262px);
+  display: flex; flex-direction: column; align-items: center; gap: 6px; pointer-events: none;
+}
+#toasts .toast { width: 100%; max-width: 460px; }
+.toast {
+  background: var(--panel); border: 1px solid var(--edge); border-left: 3px solid var(--blue);
+  padding: 6px 10px; font-size: 13px; line-height: 1.35; transition: opacity 0.5s;
+}
+.toast.good { border-left-color: var(--green); }
+.toast.warn { border-left-color: var(--yellow); }
+.toast.bad { border-left-color: var(--red); }
+.toast.dev { border-left-color: #ffffff; }
+.toast.big { border-left-color: var(--purple); font-size: 14px; }
+.toast.out { opacity: 0; }
+
+/* lista de unidades */
+#units[hidden] { display: none; }
+#units {
+  position: absolute; right: calc(var(--sr) + 8px); top: calc(var(--st) + 58px); bottom: calc(var(--sb) + 8px);
+  width: min(290px, 72vw); background: rgba(7, 9, 18, 0.94); border: 1px solid var(--edge); border-radius: 3px;
+  display: flex; flex-direction: column;
+}
+#units header { display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; border-bottom: 1px solid var(--edge); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; font-size: 12px; }
+#units header button { background: none; border: 0; font-size: 20px; line-height: 1; padding: 2px 6px; }
+#ulist { overflow-y: auto; touch-action: pan-y; padding: 4px 0; flex: 1; min-height: 0; }
+.unit { display: grid; grid-template-columns: 1fr auto; gap: 3px 8px; width: 100%; text-align: left; padding: 7px 10px; background: none; border: 0; border-bottom: 1px solid rgba(42, 50, 82, 0.5); }
+.unit .un { font-size: 13px; }
+.unit .uw { font: 11px var(--mono); color: var(--dim); align-self: center; }
+.unit.sel .un { color: #ff5a50; }
+.unit i { grid-column: 1 / -1; display: block; height: 4px; }
+.hbar { width: var(--w); background: linear-gradient(90deg, #16b416 var(--f), #c01212 var(--f)); }
+.mbar { width: 100%; background: #10131f; position: relative; }
+.mbar::after { content: ""; position: absolute; inset: 0 auto 0 0; width: var(--f); }
+.mbar.fin::after { background: var(--blue); }
+.mbar.raw::after { background: #e21cd8; }
+.empty { padding: 12px; color: var(--dim); font-size: 13px; }
+
+/* mapa grande */
+#map { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.9); display: grid; place-items: center; }
+#map[hidden] { display: none; }
+#mapc { width: min(calc(100vw - 32px), calc(100vh - 32px)); height: min(calc(100vw - 32px), calc(100vh - 32px)); touch-action: none; }
+#map-close { position: absolute; right: calc(var(--sr) + 10px); top: calc(var(--st) + 10px); }
+
+/* pantallas superpuestas */
+.ov {
+  position: absolute; inset: 0; overflow-y: auto; touch-action: pan-y;
+  display: flex; align-items: center; justify-content: center;
+  padding: calc(var(--st) + 16px) calc(var(--sr) + 16px) calc(var(--sb) + 16px) calc(var(--sl) + 16px);
+  background: radial-gradient(ellipse at 50% 40%, rgba(0, 0, 0, 0.25), rgba(0, 0, 0, 0.78) 70%);
+}
+.ov[hidden] { display: none; }
+.card { background: rgba(7, 10, 19, 0.88); border: 1px solid var(--edge); border-radius: 4px; padding: 22px; width: min(100%, 620px); margin: auto; }
+
+#title .card { display: grid; gap: 18px; width: min(100%, 760px); grid-template-columns: 1fr; }
+.brand { display: grid; gap: 10px; align-content: center; }
+.eyebrow { font: 11px var(--mono); letter-spacing: 0.2em; color: var(--dim); text-transform: uppercase; }
+h1 { margin: 0; font-family: var(--ui); font-weight: 700; font-size: clamp(38px, 10vmin, 76px); line-height: 0.92; letter-spacing: 0.16em; text-wrap: balance; }
+h1 span { display: block; color: transparent; -webkit-text-stroke: 1.2px var(--ink); }
+.teams { display: flex; gap: 4px; }
+.teams i { width: 34px; height: 10px; background: var(--c); }
+.tag { margin: 0; color: var(--dim); font-size: 14px; line-height: 1.45; max-width: 34ch; }
+.menu { display: grid; gap: 8px; align-content: center; }
+.mb {
+  display: flex; justify-content: space-between; align-items: center; gap: 10px; width: 100%;
+  min-height: 46px; padding: 0 16px; border-radius: 3px; text-align: left;
+  background: rgba(30, 38, 70, 0.45); border: 1px solid var(--edge);
+  font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; font-size: 14px;
+}
+.mb small { font: 12px var(--mono); letter-spacing: 0.06em; color: var(--dim); text-transform: none; }
+.mb.primary { background: rgba(61, 116, 255, 0.22); border-color: #4b6fd6; }
+.mb:active { background: rgba(61, 116, 255, 0.4); }
+.opts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.chip { padding: 8px 11px; border-radius: 3px; background: transparent; border: 1px solid var(--edge); font: 12px var(--mono); color: var(--ink); }
+.chip:active { background: #1d2a55; }
+.score { margin: 0; font: 12px var(--mono); color: var(--dim); }
+.rot { margin: 0; font-size: 13px; color: var(--yellow); display: none; }
+.credit { margin: 0; font-size: 12px; color: var(--dim); line-height: 1.45; grid-column: 1 / -1; border-top: 1px solid var(--edge); padding-top: 12px; }
+@media (orientation: landscape) and (min-width: 560px) {
+  #title .card { grid-template-columns: 1.05fr 1fr; column-gap: 28px; }
+}
+@media (orientation: portrait) {
+  .rot { display: block; }
+}
+
+/* ayuda */
+#help .card { width: min(100%, 680px); padding: 0; }
+#help header { position: sticky; top: 0; display: flex; justify-content: space-between; align-items: center; padding: 14px 18px; background: var(--panel-solid); border-bottom: 1px solid var(--edge); }
+#help h2 { margin: 0; font-size: 18px; letter-spacing: 0.1em; text-transform: uppercase; }
+.hbody { padding: 6px 18px 18px; line-height: 1.55; font-size: 14px; }
+.hbody h3 { margin: 18px 0 6px; font-size: 13px; letter-spacing: 0.14em; text-transform: uppercase; color: #9fb6ff; }
+.hbody p, .hbody ul { margin: 0 0 8px; max-width: 64ch; }
+.hbody ul { padding-left: 18px; }
+.hbody li { margin-bottom: 4px; }
+.hbody kbd { font: 12px var(--mono); padding: 1px 5px; border: 1px solid var(--edge); border-radius: 3px; background: #10142a; }
+.sw { display: inline-block; width: 10px; height: 10px; vertical-align: -1px; margin-right: 2px; }
+
+/* diálogo */
+#dialog .card { display: grid; gap: 14px; width: min(100%, 520px); }
+#dialog h2 { margin: 0; font-size: 22px; letter-spacing: 0.1em; text-transform: uppercase; }
+#d-body { margin: 0; line-height: 1.5; color: var(--ink); }
+#d-btns { display: grid; gap: 8px; }
+#d-foot { margin: 0; font: 12px var(--mono); color: var(--dim); }
+
+@media (orientation: portrait) {
+  #status { bottom: calc(var(--sb) + var(--btn) * 2.2 + 34px); max-width: calc(100% - 32px); }
+  #toasts { top: auto; left: calc(var(--sl) + 16px); right: calc(var(--sr) + 16px); bottom: calc(var(--sb) + var(--btn) * 2.2 + 74px); flex-direction: column-reverse; }
+}
+/* online */
+input { -webkit-user-select: text; user-select: text; touch-action: manipulation; font: 16px var(--ui); color: var(--ink); background: #0d1124; border: 1px solid var(--edge); border-radius: 3px; padding: 10px 12px; width: 100%; }
+input:focus-visible { outline: 2px solid var(--yellow); outline-offset: 1px; }
+#online .card, #lobby .card { display: grid; gap: 12px; width: min(100%, 520px); }
+.lcol { display: grid; gap: 12px; align-content: start; min-width: 0; }
+@media (orientation: landscape) and (min-width: 700px) {
+  #lobby .card { width: min(100%, 980px); grid-template-columns: 0.9fr 1.1fr; column-gap: 24px; }
+}
+@media (max-height: 480px) {
+  #lobby .card, #online .card { padding: 14px 16px; gap: 8px; }
+  .lcol { gap: 8px; }
+  #l-code { font-size: 30px; }
+  #l-slots { gap: 4px; }
+  #l-slots li { padding: 3px 8px; }
+  #lobby .chip { padding: 6px 9px; }
+  #lobby .mb, #online .mb { min-height: 40px; }
+}
+#online h2 { margin: 0; font-size: 20px; letter-spacing: 0.08em; text-transform: uppercase; }
+.field { display: grid; gap: 5px; }
+.field span { font: 11px var(--mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--dim); }
+.join { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: end; }
+.join .mb { width: auto; }
+#on-code { font: 22px var(--mono); letter-spacing: 0.3em; text-transform: uppercase; }
+.msg { margin: 0; padding: 8px 10px; border-left: 3px solid var(--blue); background: rgba(61, 116, 255, 0.1); font-size: 14px; }
+.msg.bad { border-left-color: var(--red); background: rgba(255, 59, 48, 0.1); }
+.note { margin: 0; font-size: 13px; color: var(--dim); line-height: 1.45; }
+.codebox { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+#l-code { font: 40px/1 var(--mono); letter-spacing: 0.25em; color: #fff; }
+.sharerow { display: flex; gap: 8px; align-items: stretch; flex-wrap: wrap; }
+.sharerow .mb { flex: 1 1 220px; width: auto; }
+.link { margin: 0; font: 12px var(--mono); color: var(--dim); word-break: break-all; -webkit-user-select: text; user-select: text; }
+#lobby h3 { margin: 4px 0 0; font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; color: #9fb6ff; }
+#l-slots { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+#l-slots li { display: grid; grid-template-columns: 14px 1fr auto; gap: 10px; align-items: center; padding: 6px 8px; border: 1px solid var(--edge); border-radius: 3px; }
+#l-slots li.ai .who { color: var(--dim); }
+#l-slots .sw { width: 14px; height: 14px; margin: 0; }
+#l-slots .who { font-size: 14px; min-width: 0; overflow-wrap: anywhere; }
+.chip.team { min-width: 104px; }
+.chip.team[data-ally="A"] { border-color: #2fd3b0; color: #7ff0d6; }
+.chip.team[data-ally="B"] { border-color: #ff9a1f; color: #ffc27a; }
+.chip:disabled { opacity: 0.85; cursor: default; }
+#l-host { display: grid; gap: 10px; }
+.wait { margin: 0; font-size: 14px; color: var(--yellow); }
+@media (prefers-reduced-motion: reduce) { .toast { transition: none; } }
+</style>
+
+<div id="app">
+  <canvas id="view" aria-label="Vista del sector"></canvas>
+
+  <div id="play" hidden>
+  <div id="hud"><canvas id="hudc" aria-label="Radar, indicadores y diales"></canvas></div>
+
+  <div class="tbar">
+    <button class="tb" id="t-units" aria-label="Lista de unidades"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg></button>
+    <button class="tb" id="t-zout" aria-label="Alejar"><svg viewBox="0 0 24 24"><path d="M5 12h14"/></svg></button>
+    <button class="tb" id="t-zin" aria-label="Acercar"><svg viewBox="0 0 24 24"><path d="M5 12h14M12 5v14"/></svg></button>
+    <button class="tb" id="t-center" aria-label="Volver a mi caza"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg></button>
+    <button class="tb" id="t-pause" aria-label="Pausa"><svg viewBox="0 0 24 24"><path d="M9 5v14M15 5v14"/></svg></button>
+  </div>
+
+  <div id="toasts" aria-live="polite"></div>
+  <div id="status" hidden></div>
+
+  <div id="ctl-left" class="ctl">
+    <button class="cb" id="b-left" data-ctl="left" aria-label="Girar a la izquierda"><svg viewBox="0 0 24 24"><path d="M3 4v6h6"/><path d="M5.5 15a8 8 0 1 0 1.9-8.3L3 10"/></svg></button>
+    <button class="cb" id="b-right" data-ctl="right" aria-label="Girar a la derecha"><svg viewBox="0 0 24 24"><path d="M21 4v6h-6"/><path d="M18.5 15a8 8 0 1 1-1.9-8.3L21 10"/></svg></button>
+  </div>
+  <div id="ctl-right" class="ctl">
+    <button class="cb" id="b-mis" data-ctl="mis" aria-label="Misil"><svg viewBox="0 0 24 24"><path d="M12 3l3 5v8l-3 2-3-2V8z"/><path d="M9 14l-2 4M15 14l2 4"/></svg><b>MISIL</b></button>
+    <button class="cb" id="b-fire" data-ctl="fire" aria-label="Fuego"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="2.5"/><path d="M12 3v4M12 17v4M3 12h4M17 12h4"/></svg><b>FUEGO</b></button>
+    <button class="cb" id="b-thrust" data-ctl="thrust" aria-label="Empuje"><svg viewBox="0 0 24 24"><path d="M6 13l6-6 6 6"/><path d="M6 19l6-6 6 6"/></svg><b>EMPUJE</b></button>
+  </div>
+
+  <aside id="units" hidden>
+    <header><span>Tus unidades</span><button id="u-close" aria-label="Cerrar lista">×</button></header>
+    <div id="ulist"></div>
+  </aside>
+  </div>
+
+  <div id="map" hidden>
+    <canvas id="mapc" aria-label="Mapa del sector"></canvas>
+    <button class="tb" id="map-close" aria-label="Cerrar mapa"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+  </div>
+
+  <section id="title" class="ov">
+    <div class="card">
+      <div class="brand">
+        <div class="eyebrow">Software Engineering, Inc. · 1995</div>
+        <h1>Gravity<span>Well</span></h1>
+        <div class="teams" aria-hidden="true"><i style="--c: var(--blue)"></i><i style="--c: var(--red)"></i><i style="--c: var(--purple)"></i><i style="--c: var(--yellow)"></i></div>
+        <p class="tag">Cuatro bandos, un sector de 4 a 6 estrellas y una pelea por cada planeta. Vos manejás el caza; el resto del imperio trabaja solo.</p>
+      </div>
+      <div class="menu">
+        <button class="mb primary" id="m-continue" hidden>Continuar <small id="m-continue-sec"></small></button>
+        <button class="mb primary" id="m-new">Un jugador <small>Sector 1</small></button>
+        <button class="mb primary" id="m-online" hidden>Jugar online <small>con amigos</small></button>
+        <button class="mb" id="m-help">Cómo se juega</button>
+        <div class="opts">
+          <button class="chip" id="o-sound">Sonido: Sí</button>
+          <button class="chip" id="o-size">Sector: Normal</button>
+          <button class="chip" id="o-vib">Vibración: Sí</button>
+          <button class="chip" id="o-fs" hidden>Pantalla completa</button>
+        </div>
+        <p class="score" id="m-score"></p>
+        <p class="rot">Girá el teléfono: se juega mejor en horizontal.</p>
+      </div>
+      <p class="credit">Versión táctil de Gravity Well 3.5 para Windows (1995). Usa las formas vectoriales y los sonidos del juego original; las reglas siguen su manual.</p>
+    </div>
+  </section>
+
+  <section id="help" class="ov" hidden>
+    <div class="card">
+      <header><h2>Cómo se juega</h2><button class="tb" id="h-close" aria-label="Cerrar ayuda"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></header>
+      <div class="hbody">
+        <h3>Objetivo</h3>
+        <p>Cuatro bandos se disputan los planetas del sector: vos (<span class="sw" style="background:var(--blue)"></span>azul) contra rojo, púrpura y amarillo. Empezás con un complejo completo en tu planeta natal. Ganás el sector cuando los tres rivales se quedan sin colonias y sin cargueros, porque así ya no pueden expandirse. Si eso te pasa a vos, perdés el sector y seguís en el próximo.</p>
+        <h3>Controles</h3>
+        <ul>
+          <li><b>Flechas de giro</b> (abajo a la izquierda): rotan la nave. Podés deslizar el dedo de una a otra.</li>
+          <li><b>EMPUJE</b>: enciende los motores. La nave conserva la inercia y la gravedad de estrellas y planetas la atrae todo el tiempo.</li>
+          <li><b>FUEGO</b>: cañón. Con el pulgar justo entre FUEGO y EMPUJE apretás los dos a la vez.</li>
+          <li><b>MISIL</b>: cohetes o misiles guiados, cuando tus laboratorios los desarrollen.</li>
+          <li><b>Dos dedos</b> sobre el espacio: zoom. <b>Tocar</b> una unidad tuya: la cámara la sigue. El botón de mira vuelve a tu caza.</li>
+          <li><b>Radar</b>: tocalo para abrir el mapa del sector. Los cuadros de color debajo muestran el caza de cada líder.</li>
+        </ul>
+        <h3>Aterrizar</h3>
+        <p>Acercate despacio con la punta de la nave hacia afuera del planeta, así las toberas empujan contra la gravedad. La barra de velocidad se pone con fondo azul cuando vas lo bastante lento. Si llegás mal orientado la nave se daña; si llegás muy rápido, explota.</p>
+        <p>También podés acoplarte a tus Puertos Orbitales, en la cubierta del lado de afuera, entre el dique y los sensores. Es más difícil porque el puerto se mueve en su órbita.</p>
+        <h3>Expandirse</h3>
+        <p>Aterrizar en un planeta libre lo reclama y deja tu bandera. Los cargueros salen solos con materia prima de tus colonias y construyen, en este orden, una Base, una Colonia y un Puerto Orbital. Después la Base arma un Laboratorio y un Centro de Comunicaciones, y el Puerto un Dique Espacial y unos Sensores. Un planeta con instalaciones enemigas no se puede reclamar hasta destruirlas todas.</p>
+        <h3>Economía</h3>
+        <p>Solo las Colonias producen materia prima. Las Bases y los Puertos la convierten en materiales terminados, que se usan para reparar, construir instalaciones y fabricar cazas y cargueros en Laboratorios y Diques. Aterrizado sobre tu Base o acoplado a tu Puerto, el caza se repara y recarga munición. La lista de unidades muestra el daño (verde) y los materiales: azul los terminados, magenta la materia prima.</p>
+        <h3>Laboratorios y mejoras</h3>
+        <p>Tus laboratorios investigan mejoras para el caza, y con más laboratorios lo hacen más rápido. Cuando hay una lista, tu cuadro azul y los laboratorios titilan: aterrizá en un planeta tuyo con laboratorio (o acoplate a su puerto) para instalarla. En orden: cohetes, escudos reforzados, misiles guiados, motores mejorados, cañón doble, blindaje pesado y cargadores ampliados.</p>
+        <p>Si perdés el caza se construye otro donde aterrizaste por última vez con laboratorio o dique, siempre que haya materiales.</p>
+        <h3>Indicadores</h3>
+        <p>Debajo del radar, de arriba hacia abajo: rivales en juego (negro = derrotado), escudos (celeste), munición, daño (verde sano, rojo dañado) y velocidad (fondo azul = podés aterrizar). Los diales muestran la hora, la estrella más cercana, el planeta más cercano, el enemigo más cercano (fondo rojo si está cerca) y la orientación del caza. Sin Centro de Comunicaciones ni Sensores, el radar deja de mostrar naves.</p>
+        <h3>Jugar online</h3>
+        <p>Tocá <b>Jugar online</b> y después <b>Crear partida</b>: te da un código de 4 letras y un botón para invitar por WhatsApp. Tus amigos abren el enlace en el navegador del celular, ponen su nombre y entran; no instalan nada ni crean cuentas. En la sala elegís los equipos de cada color (también los que maneja la computadora) y empezás. Quien crea la partida hace de anfitrión: si cierra el juego o bloquea el teléfono, la partida se pausa para todos. Si alguien se desconecta, la computadora maneja su color hasta que vuelva a entrar con el mismo enlace.</p>
+        <h3>Consejos</h3>
+        <ul>
+          <li>Bases, puertos y cargueros tienen torretas automáticas (los triángulos celestes). Atacá desde afuera de su alcance o con misiles.</li>
+          <li>Cazar cargueros enemigos frena su expansión, y son lo que define la victoria.</li>
+          <li>Cerca de una estrella la gravedad es más fuerte que tus motores.</li>
+          <li>La partida se guarda sola en este dispositivo. Con teclado: <kbd>←</kbd> <kbd>→</kbd> <kbd>↑</kbd>, <kbd>Espacio</kbd> fuego, <kbd>X</kbd> misil, <kbd>+</kbd>/<kbd>−</kbd> zoom, <kbd>1</kbd>–<kbd>4</kbd> líderes, <kbd>P</kbd> pausa.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section id="online" class="ov" hidden>
+    <form class="card" id="on-form" autocomplete="off">
+      <h2 id="on-title">Jugar online</h2>
+      <label class="field" for="on-name"><span>Tu nombre</span><input id="on-name" maxlength="14" placeholder="Cómo te ven los demás" autocapitalize="words" enterkeyhint="go"></label>
+      <button type="button" class="mb primary" id="on-create">Crear partida <small>vos sos el anfitrión</small></button>
+      <div class="join">
+        <label class="field" for="on-code"><span>Código de la partida</span><input id="on-code" maxlength="4" placeholder="ABCD" autocapitalize="characters" spellcheck="false" enterkeyhint="go"></label>
+        <button type="button" class="mb" id="on-join">Unirme</button>
+      </div>
+      <p class="msg" id="on-msg" role="status" hidden></p>
+      <p class="note">Tus amigos no instalan nada: abren el enlace que les mandes y listo. Quien crea la partida tiene que dejar el juego en pantalla mientras juegan.</p>
+      <button type="button" class="mb" id="on-back">Volver</button>
+    </form>
+  </section>
+
+  <section id="lobby" class="ov" hidden>
+    <div class="card">
+      <div class="lcol">
+      <div class="codebox"><span class="eyebrow">Código de la partida</span><b id="l-code">----</b></div>
+      <div class="sharerow">
+        <button class="mb primary" id="l-share">Invitar por WhatsApp</button>
+        <button class="chip" id="l-copy">Copiar enlace</button>
+      </div>
+      <p class="link" id="l-link"></p>
+      <p class="note">Mandales el enlace: lo abren en el navegador del celular, ponen su nombre y entran. Pueden sumarse también con la partida empezada.</p>
+      </div>
+      <div class="lcol">
+      <h3>Colores y equipos</h3>
+      <ul id="l-slots"></ul>
+      <p class="note" id="l-count"></p>
+      <div id="l-host">
+        <div class="opts">
+          <button class="chip" id="l-ffa">Todos contra todos</button>
+          <button class="chip" id="l-coop">Personas contra la computadora</button>
+          <button class="chip" id="l-2v2">2 contra 2</button>
+          <button class="chip" id="l-size">Sector: Normal</button>
+        </div>
+        <p class="note">Tocá el equipo de cada color para cambiarlo. Los aliados no se dañan, comparten el radar y pueden repararse en la base del otro.</p>
+        <button class="mb primary" id="l-start">Empezar partida</button>
+      </div>
+      <p class="wait" id="l-wait" hidden>Esperando que el anfitrión empiece la partida…</p>
+      <p class="msg" id="l-msg" role="status" hidden></p>
+      <button class="mb" id="l-leave">Salir</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="dialog" class="ov" hidden>
+    <div class="card">
+      <h2 id="d-title"></h2>
+      <p id="d-body"></p>
+      <div id="d-btns"></div>
+      <p id="d-foot"></p>
+    </div>
+  </section>
+</div>
+<script>
+/*__SCRIPT__*/
+</script>
