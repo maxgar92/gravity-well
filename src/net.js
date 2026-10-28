@@ -21,8 +21,13 @@ Object.assign(NET, {
 });
 
 // Latido: cada 2 s todos avisan que siguen ahí; si alguien se calla demasiado, se lo da por desconectado.
+let hbLast = 0;
 if (typeof window !== 'undefined') setInterval(() => {
   const now = performance.now();
+  // si esta pestaña estuvo congelada (otra app en primer plano), no juzgamos a nadie por ese silencio
+  const frozen = hbLast && now - hbLast > 6000;
+  hbLast = now;
+  if (frozen) { for (const rec of NET.conns.values()) rec.lastRx = now; NET.lastRx = now; }
   if (NET.role === 'host') {
     for (const rec of [...NET.conns.values()]) {
       if (!rec.open) continue;
@@ -31,8 +36,8 @@ if (typeof window !== 'undefined') setInterval(() => {
     }
   } else if (NET.role === 'client' && NET.host && NET.host.open) {
     sendTo(NET.host, { k: 'pi', c: now });
-    const limit = NET.hostPaused ? 60000 : 12000;
-    if (NET.lastRx && now - NET.lastRx > limit) clientFail('Se cortó la conexión con la partida.');
+    // el anfitrión manda un latido cada 2 s aunque esté en pausa: 15 s de silencio es un corte
+    if (NET.lastRx && now - NET.lastRx > 15000) clientFail('Se cortó la conexión con la partida.');
   }
 }, 2000);
 
@@ -106,19 +111,73 @@ function hostCreate(onReady, onError) {
   netClose();
   NET.role = 'host'; NET.phase = 'lobby'; NET.code = randomCode();
   NET.lobby = {
-    size: SET.size,
+    size: SET.size, sector: 1,
     slots: TEAMS.map((_, i) => i === 0 ? { ctl: 'local', pname: NET.name, ally: 0, token: NET.token } : { ctl: 'ai', pname: '', ally: i, token: '', peer: null }),
   };
-  const peer = new window.Peer(PEER_PREFIX + NET.code, peerOptions());
+  hostSaveSession();
+  hostOpen({ ready: onReady, error: onError, keepCode: false }, 0);
+}
+
+// Abre la "dirección" de la sala en el servicio de PeerJS. Al recuperar una sala se insiste con el mismo
+// código: el servicio tarda unos segundos en liberar el de la pestaña que Chrome cerró.
+function hostOpen(cbs, attempt) {
+  const code = NET.code;
+  const peer = new window.Peer(PEER_PREFIX + code, peerOptions());
   NET.peer = peer;
-  peer.on('open', () => onReady && onReady(NET.code));
+  peer.on('open', () => { hostSaveSession(); if (cbs.ready) cbs.ready(code); });
   peer.on('connection', conn => hostAccept(conn));
   peer.on('disconnected', () => { try { if (!peer.destroyed) peer.reconnect(); } catch (e) { /* nada */ } });
   peer.on('error', err => {
-    if (err.type === 'unavailable-id' && NET.phase === 'lobby') { netClose(); hostCreate(onReady, onError); return; }
     if (err.type === 'peer-unavailable') return;
-    if (onError) onError(netErrorText(err));
+    if (err.type === 'unavailable-id') {
+      try { peer.destroy(); } catch (e) { /* nada */ }
+      if (!cbs.keepCode) { NET.code = randomCode(); hostOpen(cbs, 0); return; }
+      if (attempt < 40) {
+        if (cbs.wait) cbs.wait(attempt + 1);
+        setTimeout(() => { if (NET.role === 'host' && NET.code === code) hostOpen(cbs, attempt + 1); }, 3000);
+        return;
+      }
+    }
+    if (cbs.error) cbs.error(netErrorText(err));
   });
+}
+
+/* ---------- la sala sobrevive si Chrome cierra la pestaña (por ejemplo al ir a WhatsApp) ---------- */
+const HOST_KEY = 'gw-host', CLIENT_KEY = 'gw-client', SESSION_TTL = 45 * 60 * 1000;
+function hostSaveSession() {
+  if (NET.role !== 'host' || !NET.code || !NET.lobby) return;
+  const sess = {
+    v: 1, code: NET.code, ts: Date.now(), phase: NET.phase,
+    lobby: { size: NET.lobby.size, sector: NET.lobby.sector || 1, slots: NET.lobby.slots.map(s => ({ ctl: s.ctl, pname: s.pname || '', ally: s.ally, token: s.token || '' })) },
+    g: NET.phase === 'game' && G && G.online && !G.demo ? G : null,
+  };
+  try { localStorage.setItem(HOST_KEY, JSON.stringify(sess)); } catch (e) { /* sin almacenamiento */ }
+}
+function loadSession(key) {
+  try { const s = JSON.parse(localStorage.getItem(key) || 'null'); if (s && s.v === 1 && Date.now() - s.ts < SESSION_TTL) return s; } catch (e) { /* nada */ }
+  return null;
+}
+function clearSessions() { try { localStorage.removeItem(HOST_KEY); localStorage.removeItem(CLIENT_KEY); } catch (e) { /* nada */ } }
+function saveClientSession(code) { try { localStorage.setItem(CLIENT_KEY, JSON.stringify({ v: 1, code, ts: Date.now() })); } catch (e) { /* nada */ } }
+
+function hostRestore(sess, cbs) {
+  netClose();
+  NET.role = 'host'; NET.code = sess.code;
+  NET.lobby = {
+    size: sess.lobby.size, sector: sess.lobby.sector || 1,
+    slots: sess.lobby.slots.map((s, i) => i === 0 ? { ctl: 'local', pname: NET.name, ally: s.ally, token: NET.token } : { ctl: 'ai', pname: s.pname, ally: s.ally, token: s.token, peer: null }),
+  };
+  NET.ev = []; NET.teamEv = [[], [], [], []]; NET.instSig = ''; NET.snapN = 0;
+  if (sess.g && !sess.g.over) {
+    G = migrateGame(sess.g); ME = 0; rebuildIndex(); FX = [];
+    for (const T of G.teams) if (T.ctl === 'remote') { T.ctl = 'ai'; T.human = false; T.peer = null; }
+    for (const u of G.units) if (u.type === 'fighter') u.rem = null;
+    NET.phase = 'game';
+  } else {
+    if (sess.g && sess.g.over) NET.lobby.sector = sess.g.sector + 1;
+    NET.phase = 'lobby';
+  }
+  hostOpen(Object.assign({ keepCode: true }, cbs), 0);
 }
 
 function hostAccept(conn) {
@@ -136,8 +195,9 @@ function hostOnMsg(rec, m) {
       rec.name = String(m.name || '').slice(0, 14) || 'Jugador'; rec.token = String(m.token || '').slice(0, 24); rec.open = true;
       if (NET.phase === 'lobby') {
         const sl = NET.lobby.slots;
-        let i = sl.findIndex((s, j) => j > 0 && s.ctl === 'remote' && s.token === rec.token);
+        let i = sl.findIndex((s, j) => j > 0 && s.token && s.token === rec.token && s.ctl !== 'local');
         if (i >= 0) for (const o of NET.conns.values()) if (o !== rec && o.team === i) { o.team = -1; try { o.conn.close(); } catch (e) { /* nada */ } }
+        if (i < 0) i = sl.findIndex((s, j) => j > 0 && s.ctl === 'ai' && !s.token);
         if (i < 0) i = sl.findIndex((s, j) => j > 0 && s.ctl === 'ai');
         if (i < 0) { sendTo(rec.conn, { k: 'full' }); setTimeout(() => rec.conn.close(), 300); return; }
         Object.assign(sl[i], { ctl: 'remote', pname: rec.name, token: rec.token, peer: rec.conn.peer });
@@ -196,6 +256,7 @@ function hostDrop(rec) {
 }
 
 function hostLobbyChanged() {
+  hostSaveSession();
   const info = lobbyInfo();
   for (const rec of NET.conns.values()) if (rec.open && rec.team >= 0) sendTo(rec.conn, { k: 'lob', lobby: info, team: rec.team });
   if (typeof renderLobby === 'function') renderLobby();
@@ -206,7 +267,7 @@ function hostStartGame(sector) {
   const slots = NET.phase === 'lobby'
     ? NET.lobby.slots.map(s => ({ ctl: s.ctl, pname: s.pname, ally: s.ally, token: s.token }))
     : G.teams.map(T => ({ ctl: T.ctl, pname: T.ctl === 'ai' ? '' : T.pname, ally: T.ally, token: T.token, peer: T.peer }));
-  NET.phase = 'game';
+  NET.phase = 'game'; NET.lobby.sector = sector;
   newGame(sector, NET.lobby.size, false, { online: true, slots });
   ME = 0;
   slots.forEach((sl, i) => { G.teams[i].peer = sl.peer || null; });
@@ -217,6 +278,7 @@ function hostStartGame(sector) {
     if (T.ctl !== 'remote') continue;
     sendTo(rec.conn, { k: 'ini', team: rec.team, g: G, paused: false });
   }
+  hostSaveSession();
 }
 
 /* nave de un jugador remoto, del lado del anfitrión */
@@ -288,8 +350,9 @@ function hostBroadcast(obj) { for (const rec of NET.conns.values()) if (rec.open
 
 function netHostTick(dt) {
   if (NET.role !== 'host' || NET.phase !== 'game' || !G) return;
-  NET.snapT += dt;
+  NET.snapT += dt; NET.saveT = (NET.saveT || 0) + dt;
   if (NET.snapT >= 1 / SNAP_HZ) { NET.snapT = 0; hostSnapshot(); }
+  if (NET.saveT >= 5) { NET.saveT = 0; hostSaveSession(); }
 }
 
 /* ===================== CLIENTE ===================== */
@@ -312,21 +375,21 @@ function clientJoin(code, handlers) {
   peer.on('error', err => {
     clearTimeout(failTimer);
     if (err.type === 'peer-unavailable') clientFail(`No se encontró la partida ${NET.code}. Puede que el anfitrión la haya cerrado.`);
-    else clientFail(netErrorText(err));
+    else clientFail(netErrorText(err), err.type === 'browser-incompatible');
   });
 }
 
-function clientFail(msg) {
+function clientFail(msg, fatal) {
   if (NET.role !== 'client') return;
   const h = NET.handlers || {};
   netClose();
-  if (h.fail) h.fail(msg);
+  if (h.fail) h.fail(msg, !!fatal);
 }
 
 function clientOnMsg(m) {
   const h = NET.handlers || {};
   switch (m.k) {
-    case 'wel': ME = m.team; NET.phase = m.phase; if (h.welcome) h.welcome(m); break;
+    case 'wel': ME = m.team; NET.phase = m.phase; saveClientSession(NET.code); if (h.welcome) h.welcome(m); break;
     case 'lob': ME = m.team; if (h.lobby) h.lobby(m.lobby); break;
     case 'ini': {
       G = migrateGame(m.g); ME = m.team; rebuildIndex(); FX = [];
@@ -342,8 +405,8 @@ function clientOnMsg(m) {
     case 'end': if (h.end) h.end(m); break;
     case 'pz': NET.hostPaused = !!m.on; if (h.pause) h.pause(m.on); break;
     case 'po': { const rtt = (performance.now() - m.c) / 1000; NET.lat = clamp(NET.lat * 0.7 + rtt / 2 * 0.3, 0.01, 0.35); break; }
-    case 'full': clientFail('La partida está completa: los 3 lugares para amigos ya están ocupados.'); break;
-    case 'err': clientFail(m.msg || 'El anfitrión rechazó la conexión.'); break;
+    case 'full': clientFail('La partida está completa: los 3 lugares para amigos ya están ocupados.', true); break;
+    case 'err': clientFail(m.msg || 'El anfitrión rechazó la conexión.', true); break;
   }
 }
 

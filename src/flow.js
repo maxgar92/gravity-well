@@ -113,7 +113,7 @@ function showSectorEnd(winAlly) {
   }
 }
 
-function leaveOnline() { netClose(); startDemo(); showTitle(); }
+function leaveOnline() { clearTimeout(NET.retryT); clearSessions(); netClose(); startDemo(); showTitle(); }
 
 function dialog(title, body, buttons, foot) {
   $('d-title').textContent = title;
@@ -213,26 +213,40 @@ function createOnline() {
   hostCreate(() => showLobby(), err => { if (mode === 'lobby') { leaveOnline(); openOnline(); } onlineMsg(err, true); });
 }
 
-function joinOnline() {
-  const code = $('on-code').value.trim().toUpperCase();
+function joinOnline(codeArg, attempt) {
+  const code = (codeArg || $('on-code').value).trim().toUpperCase();
+  attempt = attempt || 0;
+  clearTimeout(NET.retryT);
   if (!/^[A-Z0-9]{4}$/.test(code)) { onlineMsg('El código tiene 4 letras o números.', true); return; }
   if (!onlineAvailable()) { onlineMsg('Este navegador no permite jugar online.', true); return; }
-  readName();
-  onlineMsg('Conectando con la partida…');
+  if (!attempt) readName();
+  if (!attempt && mode !== 'reconnect') onlineMsg('Conectando con la partida…');
   clientJoin(code, {
     welcome: m => { if (m.phase === 'lobby') showLobby(); },
     lobby: info => { NET.clientLobby = info; renderLobby(); },
     start: () => { enterPlay(); introToasts(); },
     end: m => showSectorEnd(m.w),
     pause: on => hostPausedOverlay(on),
-    fail: msg => {
-      const wasPlaying = mode === 'play' || mode === 'lobby';
-      startDemo(); mode = 'title'; setPlaying(false);
-      if (wasPlaying) dialog('Se cortó la conexión', msg, [
-        { t: 'Reconectar', primary: true, f: () => { openOnline(code); joinOnline(); } },
-        { t: 'Menú principal', f: showTitle },
-      ]);
-      else { openOnline(code); onlineMsg(msg, true); }
+    fail: (msg, fatal) => {
+      const inside = mode === 'play' || mode === 'lobby' || mode === 'reconnect';
+      if (inside && mode !== 'reconnect') { startDemo(); setPlaying(false); mode = 'reconnect'; }
+      // si el anfitrión no responde (por ejemplo, está en WhatsApp), reintentamos solos un rato
+      if (!fatal && attempt < 40) {
+        if (mode === 'reconnect') {
+          dialog('Reconectando…', `Se perdió la conexión con la partida ${code}. Si el anfitrión salió un momento del juego, volvés a entrar solo apenas regrese.`,
+            [{ t: 'Salir de la partida', f: () => { clearTimeout(NET.retryT); clearSessions(); netClose(); showTitle(); } }],
+            `Intento ${attempt + 1} de 40`);
+        } else onlineMsg(`El anfitrión no responde todavía; sigo intentando (${attempt + 1} de 40). Si está mandando el enlace por WhatsApp, cuando vuelva al juego entrás solo.`);
+        NET.retryT = setTimeout(() => { if (mode === 'reconnect' || !$('online').hidden) joinOnline(code, attempt + 1); }, 3000);
+        return;
+      }
+      if (mode === 'reconnect') {
+        mode = 'title';
+        dialog('Se cortó la conexión', msg, [
+          { t: 'Reintentar', primary: true, f: () => { mode = 'reconnect'; joinOnline(code, 0); } },
+          { t: 'Menú principal', f: () => { clearSessions(); showTitle(); } },
+        ]);
+      } else { openOnline(code); onlineMsg(msg, true); }
     },
   });
 }
@@ -268,6 +282,29 @@ function renderLobby() {
   $('l-size').disabled = !host;
 }
 
+// Chrome cerró la pestaña (por ejemplo al ir a WhatsApp): se reabre la sala con el mismo código
+function restoreHostSession(sess) {
+  const wasGame = !!(sess.g && !sess.g.over);
+  paused = true;
+  dialog('Recuperando tu partida', `Reabriendo la sala ${sess.code} para que tus amigos sigan entrando con el mismo enlace…`,
+    [{ t: 'Cancelar y volver al menú', f: () => { clearSessions(); netClose(); startDemo(); showTitle(); } }]);
+  hostRestore(sess, {
+    ready: () => {
+      if (NET.phase === 'game') {
+        enterPlay(); pause(true);
+        toast('Partida recuperada. Tus amigos vuelven a entrar solos; tocá Continuar cuando quieras seguir.', 'good');
+      } else { paused = false; showLobby(); lobbyMsg('Sala recuperada con el mismo código. Los que ya habían entrado vuelven solos.'); }
+    },
+    wait: n => { if (!$('dialog').hidden) $('d-foot').textContent = `Esperando que se libere el código (${n})…`; },
+    error: msg => {
+      dialog('No se pudo recuperar la partida', msg, [
+        { t: 'Reintentar', primary: true, f: () => restoreHostSession(sess) },
+        { t: 'Menú principal', f: () => { clearSessions(); netClose(); startDemo(); showTitle(); } },
+      ]);
+    },
+  });
+}
+
 function lobbyMsg(t) { const el = $('l-msg'); el.textContent = t || ''; el.hidden = !t; }
 
 function setAllies(fn) {
@@ -280,7 +317,7 @@ function setAllies(fn) {
 function hostStartFromLobby() {
   const groups = new Set(NET.lobby.slots.map(s => s.ally));
   if (groups.size < 2) { lobbyMsg('Tiene que haber al menos dos bandos distintos.'); return; }
-  hostStartGame(1);
+  hostStartGame(NET.lobby.sector || 1);
   enterPlay();
   introToasts();
 }
@@ -324,8 +361,8 @@ function bindUI() {
   }
   // online
   on('on-create', createOnline);
-  on('on-join', joinOnline);
-  on('on-back', () => { netClose(); showTitle(); });
+  on('on-join', () => joinOnline());
+  on('on-back', () => { clearTimeout(NET.retryT); netClose(); showTitle(); });
   $('on-code').addEventListener('input', e => { e.target.value = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 4); });
   $('on-form').addEventListener('submit', e => { e.preventDefault(); audioInit(); if ($('on-code').value) joinOnline(); else createOnline(); });
   on('l-share', shareInvite);
@@ -362,13 +399,14 @@ function bindUI() {
   });
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
+      if (NET.role === 'host') hostSaveSession();
       if (mode === 'play' && G && !G.over && NET.role !== 'client') { saveGame(); if (!paused) pause(true); }
     } else {
       if (NET.role === 'client') NET.resync = true;
       if (wakeSentinel === null && mode === 'play') wakeLock();
     }
   });
-  window.addEventListener('pagehide', saveGame);
+  window.addEventListener('pagehide', () => { saveGame(); if (NET.role === 'host') hostSaveSession(); });
   window.addEventListener('resize', resize);
   if (window.visualViewport) window.visualViewport.addEventListener('resize', resize);
 }
@@ -427,7 +465,14 @@ function start(data) {
     startDemo(); showTitle();
     let code = '';
     try { code = (new URLSearchParams(location.search).get('p') || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 4); } catch (e) { code = ''; }
-    if (code && onlineAvailable()) openOnline(code);
+    if (onlineAvailable()) {
+      const hs = loadSession(HOST_KEY), cs = loadSession(CLIENT_KEY);
+      if (!code && hs) restoreHostSession(hs);
+      else if (code) {
+        openOnline(code);
+        if (cs && cs.code === code && SET.name) { onlineMsg('Volviendo a entrar a la partida…'); joinOnline(code); }
+      }
+    }
   }
   requestAnimationFrame(t => { lastT = t; frame(t); });
 }

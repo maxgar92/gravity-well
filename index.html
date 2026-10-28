@@ -368,7 +368,7 @@ input:focus-visible { outline: 2px solid var(--yellow); outline-offset: 1px; }
         <h3>Indicadores</h3>
         <p>Debajo del radar, de arriba hacia abajo: rivales en juego (negro = derrotado), escudos (celeste), munición, daño (verde sano, rojo dañado) y velocidad (fondo azul = podés aterrizar). Los diales muestran la hora, la estrella más cercana, el planeta más cercano, el enemigo más cercano (fondo rojo si está cerca) y la orientación del caza. Sin Centro de Comunicaciones ni Sensores, el radar deja de mostrar naves.</p>
         <h3>Jugar online</h3>
-        <p>Tocá <b>Jugar online</b> y después <b>Crear partida</b>: te da un código de 4 letras y un botón para invitar por WhatsApp. Tus amigos abren el enlace en el navegador del celular, ponen su nombre y entran; no instalan nada ni crean cuentas. En la sala elegís los equipos de cada color (también los que maneja la computadora) y empezás. Quien crea la partida hace de anfitrión: si cierra el juego o bloquea el teléfono, la partida se pausa para todos. Si alguien se desconecta, la computadora maneja su color hasta que vuelva a entrar con el mismo enlace.</p>
+        <p>Tocá <b>Jugar online</b> y después <b>Crear partida</b>: te da un código de 4 letras y un botón para invitar por WhatsApp. Tus amigos abren el enlace en el navegador del celular, ponen su nombre y entran; no instalan nada ni crean cuentas. En la sala elegís los equipos de cada color (también los que maneja la computadora) y empezás. Quien crea la partida hace de anfitrión: si cierra el juego o bloquea el teléfono, la partida se pausa para todos. Si alguien se desconecta, la computadora maneja su color hasta que vuelva a entrar con el mismo enlace. Si Chrome cierra el juego mientras mandás la invitación (pasa en algunos celulares al cambiar de app), volvé a abrirlo: la sala o la partida se recupera sola con el mismo código y tus amigos reentran solos.</p>
         <h3>Consejos</h3>
         <ul>
           <li>Bases, puertos y cargueros tienen torretas automáticas (los triángulos celestes). Atacá desde afuera de su alcance o con misiles.</li>
@@ -404,7 +404,7 @@ input:focus-visible { outline: 2px solid var(--yellow); outline-offset: 1px; }
         <button class="chip" id="l-copy">Copiar enlace</button>
       </div>
       <p class="link" id="l-link"></p>
-      <p class="note">Mandales el enlace: lo abren en el navegador del celular, ponen su nombre y entran. Pueden sumarse también con la partida empezada.</p>
+      <p class="note">Mandales el enlace: lo abren en el navegador del celular, ponen su nombre y entran. Pueden sumarse también con la partida empezada. Si al volver de WhatsApp el juego se reinicia, no pasa nada: la sala se recupera sola con el mismo código.</p>
       </div>
       <div class="lcol">
       <h3>Colores y equipos</h3>
@@ -1600,8 +1600,13 @@ Object.assign(NET, {
 });
 
 // Latido: cada 2 s todos avisan que siguen ahí; si alguien se calla demasiado, se lo da por desconectado.
+let hbLast = 0;
 if (typeof window !== 'undefined') setInterval(() => {
   const now = performance.now();
+  // si esta pestaña estuvo congelada (otra app en primer plano), no juzgamos a nadie por ese silencio
+  const frozen = hbLast && now - hbLast > 6000;
+  hbLast = now;
+  if (frozen) { for (const rec of NET.conns.values()) rec.lastRx = now; NET.lastRx = now; }
   if (NET.role === 'host') {
     for (const rec of [...NET.conns.values()]) {
       if (!rec.open) continue;
@@ -1610,8 +1615,8 @@ if (typeof window !== 'undefined') setInterval(() => {
     }
   } else if (NET.role === 'client' && NET.host && NET.host.open) {
     sendTo(NET.host, { k: 'pi', c: now });
-    const limit = NET.hostPaused ? 60000 : 12000;
-    if (NET.lastRx && now - NET.lastRx > limit) clientFail('Se cortó la conexión con la partida.');
+    // el anfitrión manda un latido cada 2 s aunque esté en pausa: 15 s de silencio es un corte
+    if (NET.lastRx && now - NET.lastRx > 15000) clientFail('Se cortó la conexión con la partida.');
   }
 }, 2000);
 
@@ -1685,19 +1690,73 @@ function hostCreate(onReady, onError) {
   netClose();
   NET.role = 'host'; NET.phase = 'lobby'; NET.code = randomCode();
   NET.lobby = {
-    size: SET.size,
+    size: SET.size, sector: 1,
     slots: TEAMS.map((_, i) => i === 0 ? { ctl: 'local', pname: NET.name, ally: 0, token: NET.token } : { ctl: 'ai', pname: '', ally: i, token: '', peer: null }),
   };
-  const peer = new window.Peer(PEER_PREFIX + NET.code, peerOptions());
+  hostSaveSession();
+  hostOpen({ ready: onReady, error: onError, keepCode: false }, 0);
+}
+
+// Abre la "dirección" de la sala en el servicio de PeerJS. Al recuperar una sala se insiste con el mismo
+// código: el servicio tarda unos segundos en liberar el de la pestaña que Chrome cerró.
+function hostOpen(cbs, attempt) {
+  const code = NET.code;
+  const peer = new window.Peer(PEER_PREFIX + code, peerOptions());
   NET.peer = peer;
-  peer.on('open', () => onReady && onReady(NET.code));
+  peer.on('open', () => { hostSaveSession(); if (cbs.ready) cbs.ready(code); });
   peer.on('connection', conn => hostAccept(conn));
   peer.on('disconnected', () => { try { if (!peer.destroyed) peer.reconnect(); } catch (e) { /* nada */ } });
   peer.on('error', err => {
-    if (err.type === 'unavailable-id' && NET.phase === 'lobby') { netClose(); hostCreate(onReady, onError); return; }
     if (err.type === 'peer-unavailable') return;
-    if (onError) onError(netErrorText(err));
+    if (err.type === 'unavailable-id') {
+      try { peer.destroy(); } catch (e) { /* nada */ }
+      if (!cbs.keepCode) { NET.code = randomCode(); hostOpen(cbs, 0); return; }
+      if (attempt < 40) {
+        if (cbs.wait) cbs.wait(attempt + 1);
+        setTimeout(() => { if (NET.role === 'host' && NET.code === code) hostOpen(cbs, attempt + 1); }, 3000);
+        return;
+      }
+    }
+    if (cbs.error) cbs.error(netErrorText(err));
   });
+}
+
+/* ---------- la sala sobrevive si Chrome cierra la pestaña (por ejemplo al ir a WhatsApp) ---------- */
+const HOST_KEY = 'gw-host', CLIENT_KEY = 'gw-client', SESSION_TTL = 45 * 60 * 1000;
+function hostSaveSession() {
+  if (NET.role !== 'host' || !NET.code || !NET.lobby) return;
+  const sess = {
+    v: 1, code: NET.code, ts: Date.now(), phase: NET.phase,
+    lobby: { size: NET.lobby.size, sector: NET.lobby.sector || 1, slots: NET.lobby.slots.map(s => ({ ctl: s.ctl, pname: s.pname || '', ally: s.ally, token: s.token || '' })) },
+    g: NET.phase === 'game' && G && G.online && !G.demo ? G : null,
+  };
+  try { localStorage.setItem(HOST_KEY, JSON.stringify(sess)); } catch (e) { /* sin almacenamiento */ }
+}
+function loadSession(key) {
+  try { const s = JSON.parse(localStorage.getItem(key) || 'null'); if (s && s.v === 1 && Date.now() - s.ts < SESSION_TTL) return s; } catch (e) { /* nada */ }
+  return null;
+}
+function clearSessions() { try { localStorage.removeItem(HOST_KEY); localStorage.removeItem(CLIENT_KEY); } catch (e) { /* nada */ } }
+function saveClientSession(code) { try { localStorage.setItem(CLIENT_KEY, JSON.stringify({ v: 1, code, ts: Date.now() })); } catch (e) { /* nada */ } }
+
+function hostRestore(sess, cbs) {
+  netClose();
+  NET.role = 'host'; NET.code = sess.code;
+  NET.lobby = {
+    size: sess.lobby.size, sector: sess.lobby.sector || 1,
+    slots: sess.lobby.slots.map((s, i) => i === 0 ? { ctl: 'local', pname: NET.name, ally: s.ally, token: NET.token } : { ctl: 'ai', pname: s.pname, ally: s.ally, token: s.token, peer: null }),
+  };
+  NET.ev = []; NET.teamEv = [[], [], [], []]; NET.instSig = ''; NET.snapN = 0;
+  if (sess.g && !sess.g.over) {
+    G = migrateGame(sess.g); ME = 0; rebuildIndex(); FX = [];
+    for (const T of G.teams) if (T.ctl === 'remote') { T.ctl = 'ai'; T.human = false; T.peer = null; }
+    for (const u of G.units) if (u.type === 'fighter') u.rem = null;
+    NET.phase = 'game';
+  } else {
+    if (sess.g && sess.g.over) NET.lobby.sector = sess.g.sector + 1;
+    NET.phase = 'lobby';
+  }
+  hostOpen(Object.assign({ keepCode: true }, cbs), 0);
 }
 
 function hostAccept(conn) {
@@ -1715,8 +1774,9 @@ function hostOnMsg(rec, m) {
       rec.name = String(m.name || '').slice(0, 14) || 'Jugador'; rec.token = String(m.token || '').slice(0, 24); rec.open = true;
       if (NET.phase === 'lobby') {
         const sl = NET.lobby.slots;
-        let i = sl.findIndex((s, j) => j > 0 && s.ctl === 'remote' && s.token === rec.token);
+        let i = sl.findIndex((s, j) => j > 0 && s.token && s.token === rec.token && s.ctl !== 'local');
         if (i >= 0) for (const o of NET.conns.values()) if (o !== rec && o.team === i) { o.team = -1; try { o.conn.close(); } catch (e) { /* nada */ } }
+        if (i < 0) i = sl.findIndex((s, j) => j > 0 && s.ctl === 'ai' && !s.token);
         if (i < 0) i = sl.findIndex((s, j) => j > 0 && s.ctl === 'ai');
         if (i < 0) { sendTo(rec.conn, { k: 'full' }); setTimeout(() => rec.conn.close(), 300); return; }
         Object.assign(sl[i], { ctl: 'remote', pname: rec.name, token: rec.token, peer: rec.conn.peer });
@@ -1775,6 +1835,7 @@ function hostDrop(rec) {
 }
 
 function hostLobbyChanged() {
+  hostSaveSession();
   const info = lobbyInfo();
   for (const rec of NET.conns.values()) if (rec.open && rec.team >= 0) sendTo(rec.conn, { k: 'lob', lobby: info, team: rec.team });
   if (typeof renderLobby === 'function') renderLobby();
@@ -1785,7 +1846,7 @@ function hostStartGame(sector) {
   const slots = NET.phase === 'lobby'
     ? NET.lobby.slots.map(s => ({ ctl: s.ctl, pname: s.pname, ally: s.ally, token: s.token }))
     : G.teams.map(T => ({ ctl: T.ctl, pname: T.ctl === 'ai' ? '' : T.pname, ally: T.ally, token: T.token, peer: T.peer }));
-  NET.phase = 'game';
+  NET.phase = 'game'; NET.lobby.sector = sector;
   newGame(sector, NET.lobby.size, false, { online: true, slots });
   ME = 0;
   slots.forEach((sl, i) => { G.teams[i].peer = sl.peer || null; });
@@ -1796,6 +1857,7 @@ function hostStartGame(sector) {
     if (T.ctl !== 'remote') continue;
     sendTo(rec.conn, { k: 'ini', team: rec.team, g: G, paused: false });
   }
+  hostSaveSession();
 }
 
 /* nave de un jugador remoto, del lado del anfitrión */
@@ -1867,8 +1929,9 @@ function hostBroadcast(obj) { for (const rec of NET.conns.values()) if (rec.open
 
 function netHostTick(dt) {
   if (NET.role !== 'host' || NET.phase !== 'game' || !G) return;
-  NET.snapT += dt;
+  NET.snapT += dt; NET.saveT = (NET.saveT || 0) + dt;
   if (NET.snapT >= 1 / SNAP_HZ) { NET.snapT = 0; hostSnapshot(); }
+  if (NET.saveT >= 5) { NET.saveT = 0; hostSaveSession(); }
 }
 
 /* ===================== CLIENTE ===================== */
@@ -1891,21 +1954,21 @@ function clientJoin(code, handlers) {
   peer.on('error', err => {
     clearTimeout(failTimer);
     if (err.type === 'peer-unavailable') clientFail(`No se encontró la partida ${NET.code}. Puede que el anfitrión la haya cerrado.`);
-    else clientFail(netErrorText(err));
+    else clientFail(netErrorText(err), err.type === 'browser-incompatible');
   });
 }
 
-function clientFail(msg) {
+function clientFail(msg, fatal) {
   if (NET.role !== 'client') return;
   const h = NET.handlers || {};
   netClose();
-  if (h.fail) h.fail(msg);
+  if (h.fail) h.fail(msg, !!fatal);
 }
 
 function clientOnMsg(m) {
   const h = NET.handlers || {};
   switch (m.k) {
-    case 'wel': ME = m.team; NET.phase = m.phase; if (h.welcome) h.welcome(m); break;
+    case 'wel': ME = m.team; NET.phase = m.phase; saveClientSession(NET.code); if (h.welcome) h.welcome(m); break;
     case 'lob': ME = m.team; if (h.lobby) h.lobby(m.lobby); break;
     case 'ini': {
       G = migrateGame(m.g); ME = m.team; rebuildIndex(); FX = [];
@@ -1921,8 +1984,8 @@ function clientOnMsg(m) {
     case 'end': if (h.end) h.end(m); break;
     case 'pz': NET.hostPaused = !!m.on; if (h.pause) h.pause(m.on); break;
     case 'po': { const rtt = (performance.now() - m.c) / 1000; NET.lat = clamp(NET.lat * 0.7 + rtt / 2 * 0.3, 0.01, 0.35); break; }
-    case 'full': clientFail('La partida está completa: los 3 lugares para amigos ya están ocupados.'); break;
-    case 'err': clientFail(m.msg || 'El anfitrión rechazó la conexión.'); break;
+    case 'full': clientFail('La partida está completa: los 3 lugares para amigos ya están ocupados.', true); break;
+    case 'err': clientFail(m.msg || 'El anfitrión rechazó la conexión.', true); break;
   }
 }
 
@@ -2918,7 +2981,7 @@ function showSectorEnd(winAlly) {
   }
 }
 
-function leaveOnline() { netClose(); startDemo(); showTitle(); }
+function leaveOnline() { clearTimeout(NET.retryT); clearSessions(); netClose(); startDemo(); showTitle(); }
 
 function dialog(title, body, buttons, foot) {
   $('d-title').textContent = title;
@@ -3018,26 +3081,40 @@ function createOnline() {
   hostCreate(() => showLobby(), err => { if (mode === 'lobby') { leaveOnline(); openOnline(); } onlineMsg(err, true); });
 }
 
-function joinOnline() {
-  const code = $('on-code').value.trim().toUpperCase();
+function joinOnline(codeArg, attempt) {
+  const code = (codeArg || $('on-code').value).trim().toUpperCase();
+  attempt = attempt || 0;
+  clearTimeout(NET.retryT);
   if (!/^[A-Z0-9]{4}$/.test(code)) { onlineMsg('El código tiene 4 letras o números.', true); return; }
   if (!onlineAvailable()) { onlineMsg('Este navegador no permite jugar online.', true); return; }
-  readName();
-  onlineMsg('Conectando con la partida…');
+  if (!attempt) readName();
+  if (!attempt && mode !== 'reconnect') onlineMsg('Conectando con la partida…');
   clientJoin(code, {
     welcome: m => { if (m.phase === 'lobby') showLobby(); },
     lobby: info => { NET.clientLobby = info; renderLobby(); },
     start: () => { enterPlay(); introToasts(); },
     end: m => showSectorEnd(m.w),
     pause: on => hostPausedOverlay(on),
-    fail: msg => {
-      const wasPlaying = mode === 'play' || mode === 'lobby';
-      startDemo(); mode = 'title'; setPlaying(false);
-      if (wasPlaying) dialog('Se cortó la conexión', msg, [
-        { t: 'Reconectar', primary: true, f: () => { openOnline(code); joinOnline(); } },
-        { t: 'Menú principal', f: showTitle },
-      ]);
-      else { openOnline(code); onlineMsg(msg, true); }
+    fail: (msg, fatal) => {
+      const inside = mode === 'play' || mode === 'lobby' || mode === 'reconnect';
+      if (inside && mode !== 'reconnect') { startDemo(); setPlaying(false); mode = 'reconnect'; }
+      // si el anfitrión no responde (por ejemplo, está en WhatsApp), reintentamos solos un rato
+      if (!fatal && attempt < 40) {
+        if (mode === 'reconnect') {
+          dialog('Reconectando…', `Se perdió la conexión con la partida ${code}. Si el anfitrión salió un momento del juego, volvés a entrar solo apenas regrese.`,
+            [{ t: 'Salir de la partida', f: () => { clearTimeout(NET.retryT); clearSessions(); netClose(); showTitle(); } }],
+            `Intento ${attempt + 1} de 40`);
+        } else onlineMsg(`El anfitrión no responde todavía; sigo intentando (${attempt + 1} de 40). Si está mandando el enlace por WhatsApp, cuando vuelva al juego entrás solo.`);
+        NET.retryT = setTimeout(() => { if (mode === 'reconnect' || !$('online').hidden) joinOnline(code, attempt + 1); }, 3000);
+        return;
+      }
+      if (mode === 'reconnect') {
+        mode = 'title';
+        dialog('Se cortó la conexión', msg, [
+          { t: 'Reintentar', primary: true, f: () => { mode = 'reconnect'; joinOnline(code, 0); } },
+          { t: 'Menú principal', f: () => { clearSessions(); showTitle(); } },
+        ]);
+      } else { openOnline(code); onlineMsg(msg, true); }
     },
   });
 }
@@ -3073,6 +3150,29 @@ function renderLobby() {
   $('l-size').disabled = !host;
 }
 
+// Chrome cerró la pestaña (por ejemplo al ir a WhatsApp): se reabre la sala con el mismo código
+function restoreHostSession(sess) {
+  const wasGame = !!(sess.g && !sess.g.over);
+  paused = true;
+  dialog('Recuperando tu partida', `Reabriendo la sala ${sess.code} para que tus amigos sigan entrando con el mismo enlace…`,
+    [{ t: 'Cancelar y volver al menú', f: () => { clearSessions(); netClose(); startDemo(); showTitle(); } }]);
+  hostRestore(sess, {
+    ready: () => {
+      if (NET.phase === 'game') {
+        enterPlay(); pause(true);
+        toast('Partida recuperada. Tus amigos vuelven a entrar solos; tocá Continuar cuando quieras seguir.', 'good');
+      } else { paused = false; showLobby(); lobbyMsg('Sala recuperada con el mismo código. Los que ya habían entrado vuelven solos.'); }
+    },
+    wait: n => { if (!$('dialog').hidden) $('d-foot').textContent = `Esperando que se libere el código (${n})…`; },
+    error: msg => {
+      dialog('No se pudo recuperar la partida', msg, [
+        { t: 'Reintentar', primary: true, f: () => restoreHostSession(sess) },
+        { t: 'Menú principal', f: () => { clearSessions(); netClose(); startDemo(); showTitle(); } },
+      ]);
+    },
+  });
+}
+
 function lobbyMsg(t) { const el = $('l-msg'); el.textContent = t || ''; el.hidden = !t; }
 
 function setAllies(fn) {
@@ -3085,7 +3185,7 @@ function setAllies(fn) {
 function hostStartFromLobby() {
   const groups = new Set(NET.lobby.slots.map(s => s.ally));
   if (groups.size < 2) { lobbyMsg('Tiene que haber al menos dos bandos distintos.'); return; }
-  hostStartGame(1);
+  hostStartGame(NET.lobby.sector || 1);
   enterPlay();
   introToasts();
 }
@@ -3129,8 +3229,8 @@ function bindUI() {
   }
   // online
   on('on-create', createOnline);
-  on('on-join', joinOnline);
-  on('on-back', () => { netClose(); showTitle(); });
+  on('on-join', () => joinOnline());
+  on('on-back', () => { clearTimeout(NET.retryT); netClose(); showTitle(); });
   $('on-code').addEventListener('input', e => { e.target.value = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 4); });
   $('on-form').addEventListener('submit', e => { e.preventDefault(); audioInit(); if ($('on-code').value) joinOnline(); else createOnline(); });
   on('l-share', shareInvite);
@@ -3167,13 +3267,14 @@ function bindUI() {
   });
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
+      if (NET.role === 'host') hostSaveSession();
       if (mode === 'play' && G && !G.over && NET.role !== 'client') { saveGame(); if (!paused) pause(true); }
     } else {
       if (NET.role === 'client') NET.resync = true;
       if (wakeSentinel === null && mode === 'play') wakeLock();
     }
   });
-  window.addEventListener('pagehide', saveGame);
+  window.addEventListener('pagehide', () => { saveGame(); if (NET.role === 'host') hostSaveSession(); });
   window.addEventListener('resize', resize);
   if (window.visualViewport) window.visualViewport.addEventListener('resize', resize);
 }
@@ -3232,7 +3333,14 @@ function start(data) {
     startDemo(); showTitle();
     let code = '';
     try { code = (new URLSearchParams(location.search).get('p') || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 4); } catch (e) { code = ''; }
-    if (code && onlineAvailable()) openOnline(code);
+    if (onlineAvailable()) {
+      const hs = loadSession(HOST_KEY), cs = loadSession(CLIENT_KEY);
+      if (!code && hs) restoreHostSession(hs);
+      else if (code) {
+        openOnline(code);
+        if (cs && cs.code === code && SET.name) { onlineMsg('Volviendo a entrar a la partida…'); joinOnline(code); }
+      }
+    }
   }
   requestAnimationFrame(t => { lastT = t; frame(t); });
 }

@@ -75,7 +75,9 @@ const log = (...a) => console.log(...a);
   // pausa del anfitrión
   await host.locator('#t-pause').tap(); await c1.waitForTimeout(600);
   log('Juan sees pause dialog:', await c1.locator('#dialog').isVisible(), await c1.locator('#d-body').innerText());
-  await host.locator('#d-btns button', { hasText: 'Continuar' }).tap(); await c1.waitForTimeout(600);
+  await host.screenshot({ path: `${OUT}/48-host-paused.png` });
+  log('host dialog buttons:', JSON.stringify(await host.locator('#d-btns button').allInnerTexts()), '| dialog visible', await host.locator('#dialog').isVisible());
+  await host.locator('#d-btns button', { hasText: 'Continuar' }).tap({ timeout: 5000 }); await c1.waitForTimeout(600);
   log('Juan dialog after resume visible:', await c1.locator('#dialog').isVisible());
   // Juan se va y vuelve enseguida desde el mismo teléfono (mismo almacenamiento -> mismo token)
   const juanState = await c1.ctx.storageState();
@@ -85,8 +87,8 @@ const log = (...a) => console.log(...a);
   const c3 = await c3ctx.newPage(); c3.errors = []; c3.on('pageerror', e => c3.errors.push('JUAN2 ' + e.message));
   await c3.route(/fonts\.(googleapis|gstatic)/, r => r.abort());
   await c3.goto(BASE + '&p=' + code); await c3.waitForTimeout(500);
-  log('Juan name prefilled:', await c3.locator('#on-name').inputValue());
-  await c3.locator('#on-join').tap();
+  log('Juan name prefilled:', await c3.locator('#on-name').inputValue(), '| auto-join msg:', await c3.locator('#on-msg').innerText());
+  if (await c3.locator('#on-join').isVisible()) await c3.locator('#on-join').tap();
   await c3.locator('#play').waitFor({ state: 'visible', timeout: 15000 });
   await c3.waitForTimeout(1200);
   log('Juan rejoined as team', await ev(c3, () => ME), '| host teams', JSON.stringify(await ev(host, () => G.teams.map(t => t.ctl + ':' + t.pname))));
