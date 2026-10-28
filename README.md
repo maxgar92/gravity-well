@@ -24,7 +24,7 @@ Detalles a tener en cuenta:
 - `index.html` es el juego completo en un solo archivo. Se arma con `python3 tools/build.py` a partir de `src/` y `vendor/`.
 - `src/sim.js` tiene la física, la economía y la inteligencia de los rivales; `src/net.js`, el juego online.
 - Online: el anfitrión simula la partida y manda el estado unas 12 veces por segundo. Cada jugador simula su propia nave en su teléfono (para que responda al instante) y le reporta posición e intenciones al anfitrión. La conexión es directa entre teléfonos (WebRTC, con [PeerJS](https://github.com/peers/peerjs)); el servicio público de PeerJS solo presenta a los teléfonos y hace de relevo cuando la red no permite la conexión directa.
-- Pruebas: `node tools/simtest.js` (partidas entre computadoras), `node tools/mechtest.js` (aterrizaje, acople, equipos, protocolo online) `tools/mptest.js` (tres celulares emulados con Playwright y un servidor PeerJS local, `tools/peerserver.js`) y `tools/mptest2.js` (recuperación cuando se cierra la pestaña del anfitrión).
+- Pruebas: `node tools/simtest.js` (partidas entre computadoras), `node tools/mechtest.js` (aterrizaje, acople, equipos, protocolo online), `tools/mptest.js` (tres celulares emulados con Playwright y un servidor PeerJS local, `tools/peerserver.js`) y `tools/mptest2.js` (recuperación cuando se cierra la pestaña del anfitrión).
 
 ## Créditos
 
